@@ -54,8 +54,11 @@
       domainCategory: 'All',
       questionDomain: 'All',
       questionType: 'All',
+      questionDifficulty: 'All',
+      questionStatus: 'All',
       studentDomain: 'All'
-    }
+    },
+    questionTab: 'MCQ'
   };
 
   function toast(message, isError = false) {
@@ -577,14 +580,29 @@
 
   function questionsPage() {
     const q = (state.search.questions || '').toLowerCase().trim();
-    const dFilter = state.filter.questionDomain;
-    const tFilter = state.filter.questionType;
+    const dFilter = state.filter.questionDomain || 'All';
+    const diffFilter = state.filter.questionDifficulty || 'All';
+    const statusFilter = state.filter.questionStatus || 'All';
+    const currentTab = state.questionTab || 'MCQ';
 
-    const filtered = state.questions.filter(item => {
-      const matchD = dFilter === 'All' || String(item.domain_id) === dFilter || String(item.domainId) === dFilter;
-      const matchT = tFilter === 'All' || item.type === tFilter;
+    const mcqTotal = state.questions.filter(item => item.type === 'MCQ').length;
+    const codingTotal = state.questions.filter(item => item.type === 'Coding').length;
+
+    // Filter MCQ domains
+    const activeDomains = state.domains.filter(d => {
+      if (dFilter !== 'All' && String(d.id) !== dFilter) return false;
+      if (d.name.toLowerCase() === 'general') {
+        return state.questions.some(item => item.type === 'MCQ' && (item.domain_id === d.id || item.domainId === d.id));
+      }
+      return true;
+    });
+
+    const codingFiltered = state.questions.filter(item => {
+      if (item.type !== 'Coding') return false;
+      const matchDiff = diffFilter === 'All' || item.difficulty === diffFilter;
+      const matchStat = statusFilter === 'All' || item.status === statusFilter;
       const matchQ = !q || item.title.toLowerCase().includes(q) || item.id.toLowerCase().includes(q);
-      return matchD && matchT && matchQ;
+      return matchDiff && matchStat && matchQ;
     });
 
     return `
@@ -592,7 +610,7 @@
         ${pageHead(
           'Question library',
           'Question bank',
-          'Author questions or import bulk items from CSV / Google Sheets.',
+          'Manage domain-specific MCQ questions and universal coding challenges.',
           `
             <button type="button" class="button secondary" data-action="export-questions">↓ Export CSV / Sheets</button>
             <button type="button" class="button secondary" data-modal="bulk">↑ Import CSV / Sheets</button>
@@ -600,59 +618,173 @@
           `
         )}
 
+        <div class="filter-tabs" style="margin-bottom:18px">
+          <button type="button" class="filter-tab ${currentTab === 'MCQ' ? 'active' : ''}" data-set-question-tab="MCQ">
+            📝 Multiple Choice Questions (${mcqTotal})
+          </button>
+          <button type="button" class="filter-tab ${currentTab === 'Coding' ? 'active' : ''}" data-set-question-tab="Coding">
+            💻 Coding Challenges (${codingTotal})
+          </button>
+        </div>
+
         <div class="toolbar">
           <div class="search">
-            <input type="text" id="questionSearch" placeholder="Search question prompt or ID..." value="${esc(state.search.questions)}">
+            <input type="text" id="questionSearch" placeholder="${currentTab === 'MCQ' ? 'Search MCQ prompt or question ID...' : 'Search coding challenge or ID...'}" value="${esc(state.search.questions)}">
           </div>
-          <select class="select" id="questionDomainFilter">
-            <option value="All">All Domains</option>
-            ${state.domains.map(d => `<option value="${d.id}" ${dFilter === String(d.id) ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
+          ${currentTab === 'MCQ' ? `
+            <select class="select" id="questionDomainFilter">
+              <option value="All">All Domains (${state.domains.length})</option>
+              ${state.domains.map(d => `<option value="${d.id}" ${dFilter === String(d.id) ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
+            </select>
+          ` : ''}
+          <select class="select" id="questionDifficultyFilter">
+            <option value="All">All Difficulties</option>
+            <option value="Easy" ${diffFilter === 'Easy' ? 'selected' : ''}>Easy</option>
+            <option value="Medium" ${diffFilter === 'Medium' ? 'selected' : ''}>Medium</option>
+            <option value="Hard" ${diffFilter === 'Hard' ? 'selected' : ''}>Hard</option>
           </select>
-          <select class="select" id="questionTypeFilter">
-            <option value="All">All Types</option>
-            <option value="MCQ" ${tFilter === 'MCQ' ? 'selected' : ''}>MCQ</option>
-            <option value="Coding" ${tFilter === 'Coding' ? 'selected' : ''}>Coding</option>
+          <select class="select" id="questionStatusFilter">
+            <option value="All">All Statuses</option>
+            <option value="Published" ${statusFilter === 'Published' ? 'selected' : ''}>Published</option>
+            <option value="Archived" ${statusFilter === 'Archived' ? 'selected' : ''}>Archived</option>
           </select>
         </div>
 
-        <section class="card">
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Question</th>
-                  <th>Domain</th>
-                  <th>Type</th>
-                  <th>Difficulty</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${filtered.map(item => {
-                  const domName = state.domains.find(d => d.id === item.domain_id || d.id === item.domainId)?.name || item.domain || '—';
-                  const langs = item.type === 'Coding' ? (item.data?.languages || item.languages || []).join(', ') : '';
-                  return `
-                    <tr>
-                      <td>
-                        <div class="table-main">${esc(item.title)}</div>
-                        <div class="table-meta">${item.type === 'Coding' ? esc(langs || 'Any language') : esc(item.id)}</div>
-                      </td>
-                      <td>${esc(domName)}</td>
-                      <td>${pill(item.type, item.type === 'Coding' ? 'amber' : 'gray')}</td>
-                      <td>${esc(item.difficulty)}</td>
-                      <td>${pill(item.status, item.status === 'Published' ? 'green' : 'gray')}</td>
-                      <td>
-                        <button type="button" class="link-button" data-edit-question="${esc(item.id)}">Edit</button>
-                        <button type="button" class="link-button" data-archive-question="${esc(item.id)}">${item.status === 'Archived' ? 'Restore' : 'Archive'}</button>
-                      </td>
-                    </tr>
-                  `;
-                }).join('') || '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--muted)">No questions found matching your filter criteria.</td></tr>'}
-              </tbody>
-            </table>
+        ${currentTab === 'MCQ' ? `
+          <div class="mcq-sections">
+            ${activeDomains.map(d => {
+              const domAllMcqs = state.questions.filter(item => item.type === 'MCQ' && (item.domain_id === d.id || item.domainId === d.id));
+              const matching = domAllMcqs.filter(item => {
+                const matchDiff = diffFilter === 'All' || item.difficulty === diffFilter;
+                const matchStat = statusFilter === 'All' || item.status === statusFilter;
+                const matchQ = !q || item.title.toLowerCase().includes(q) || item.id.toLowerCase().includes(q);
+                return matchDiff && matchStat && matchQ;
+              });
+
+              if (q && matching.length === 0) return '';
+
+              return `
+                <section class="domain-group-card">
+                  <div class="domain-group-head">
+                    <div class="domain-group-title">
+                      <span class="domain-symbol" style="width:30px;height:30px;font-size:13px">${d.symbol || '📘'}</span>
+                      <h3>${esc(d.name)}</h3>
+                      <span class="pill ${d.category === 'Electronics' ? 'amber' : 'gray'}">${esc(d.category || 'Software')}</span>
+                      <span class="pill green">${matching.length} ${matching.length === 1 ? 'MCQ' : 'MCQs'}</span>
+                    </div>
+                    <div class="domain-group-actions">
+                      <button type="button" class="button secondary small" data-add-domain-mcq="${d.id}">＋ Add MCQ to ${esc(d.name)}</button>
+                    </div>
+                  </div>
+                  <div class="table-wrap">
+                    <table class="data-table">
+                      <thead>
+                        <tr>
+                          <th style="width:45%">Question</th>
+                          <th>Options & Key</th>
+                          <th>Difficulty</th>
+                          <th>Status</th>
+                          <th style="text-align:right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${matching.map(item => `
+                          <tr>
+                            <td>
+                              <div class="table-main">${esc(item.title)}</div>
+                              <div class="table-meta"><code>${esc(item.id)}</code></div>
+                            </td>
+                            <td>
+                              <div class="table-main">${(item.data?.options || []).length} Options</div>
+                              <div class="table-meta">Correct Key: <strong>[${esc(item.data?.correctOption || 'A')}]</strong></div>
+                            </td>
+                            <td>${esc(item.difficulty)}</td>
+                            <td>${pill(item.status, item.status === 'Published' ? 'green' : 'gray')}</td>
+                            <td style="text-align:right">
+                              <button type="button" class="link-button" data-edit-question="${esc(item.id)}">Edit</button>
+                              <button type="button" class="link-button" data-archive-question="${esc(item.id)}">${item.status === 'Archived' ? 'Restore' : 'Archive'}</button>
+                              <button type="button" class="link-button danger" data-delete-question="${esc(item.id)}" title="Permanently delete question">Delete</button>
+                            </td>
+                          </tr>
+                        `).join('') || `
+                          <tr>
+                            <td colspan="5" style="text-align:center;padding:26px;color:var(--muted)">
+                              No MCQ questions found in this domain.
+                              <button type="button" class="link-button" data-add-domain-mcq="${d.id}">+ Add MCQ now</button>
+                            </td>
+                          </tr>
+                        `}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              `;
+            }).join('') || '<div class="empty-state">No MCQ questions or domains match your search filter.</div>'}
           </div>
-        </section>
+        ` : `
+          <div class="coding-section">
+            <div class="notice" style="margin-bottom:18px;background:#f3f7f5;border-color:#d4e5dc;">
+              <strong>Universal Coding Problem Pool</strong>
+              <p style="margin:4px 0 0">Coding challenges are drawn randomly from this universal pool for all software-track assessments (Java, Python, Cybersecurity, Full Stack, Data Science, etc.). The 8 electronics domains do not include coding questions.</p>
+            </div>
+
+            <section class="card">
+              <div class="card-header">
+                <div>
+                  <h3 class="card-title">Coding Challenges (${codingFiltered.length})</h3>
+                  <div class="card-subtitle">Shared universal pool for all non-electronics students</div>
+                </div>
+                <button type="button" class="button primary small" data-add-coding-question>＋ Add Coding Question</button>
+              </div>
+
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width:38%">Problem Statement</th>
+                      <th>Languages</th>
+                      <th>Test Cases</th>
+                      <th>Limits</th>
+                      <th>Difficulty</th>
+                      <th>Status</th>
+                      <th style="text-align:right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${codingFiltered.map(item => {
+                      const langs = (item.data?.languages || item.languages || ['Python']).join(', ');
+                      const samples = item.data?.sampleTests || [];
+                      const hiddens = item.data?.hiddenTests || [];
+                      const timeL = item.data?.timeLimitSeconds || 3;
+                      const memL = item.data?.memoryLimitMB || 256;
+                      return `
+                        <tr>
+                          <td>
+                            <div class="table-main">${esc(item.title)}</div>
+                            <div class="table-meta"><code>${esc(item.id)}</code></div>
+                          </td>
+                          <td>${esc(langs)}</td>
+                          <td>
+                            <div class="table-main">${samples.length} public tests</div>
+                            <div class="table-meta">${hiddens.length} hidden tests</div>
+                          </td>
+                          <td>${timeL}s · ${memL}MB</td>
+                          <td>${esc(item.difficulty)}</td>
+                          <td>${pill(item.status, item.status === 'Published' ? 'green' : 'gray')}</td>
+                          <td style="text-align:right">
+                            <button type="button" class="link-button" data-edit-question="${esc(item.id)}">Edit</button>
+                            <button type="button" class="link-button" data-archive-question="${esc(item.id)}">${item.status === 'Archived' ? 'Restore' : 'Archive'}</button>
+                            <button type="button" class="link-button danger" data-delete-question="${esc(item.id)}" title="Permanently delete question">Delete</button>
+                          </td>
+                        </tr>
+                      `;
+                    }).join('') || '<tr><td colspan="7" style="text-align:center;padding:34px;color:var(--muted)">No coding challenges found matching criteria. Click "+ Add Coding Question" or bulk import.</td></tr>'}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        `}
       </div>
     `;
   }
@@ -700,7 +832,7 @@
                   <th>Email</th>
                   <th>Domain</th>
                   <th>Status</th>
-                  <th></th>
+                  <th style="text-align:right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -711,8 +843,9 @@
                     <td>${esc(s.email)}</td>
                     <td>${esc(s.domain || state.domains.find(d => d.id === s.domain_id)?.name || '—')}</td>
                     <td>${pill(s.status, s.status === 'Active' ? 'green' : 'gray')}</td>
-                    <td>
+                    <td style="text-align:right">
                       <button type="button" class="link-button" data-edit-student="${esc(s.id)}">Edit / Reset password</button>
+                      <button type="button" class="link-button danger" data-delete-student="${esc(s.id)}" title="Permanently delete student account">Delete</button>
                     </td>
                   </tr>
                 `).join('') || '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--muted)">No student accounts found. Click "+ Add student" or "Bulk import students".</td></tr>'}
@@ -724,6 +857,7 @@
       </div>
     `;
   }
+
 
   function assessmentsPage() {
     return `
@@ -1404,7 +1538,7 @@
     }
 
     if (type === 'question') {
-      title = record ? 'Edit question' : 'Add question';
+      title = record?.id ? 'Edit question' : 'Add question';
       const qtype = record?.type || 'MCQ';
       const qdata = record?.data || record || {};
       const codingDefaults = {
@@ -1549,7 +1683,7 @@
             <button type="button" class="button secondary small" data-action="load-sheets-url">Fetch</button>
           </div>
           <textarea name="csv" id="bulkCsvText" rows="11" placeholder="domainId,type,title,difficulty,options,correctOption,languages,starterCodes,sampleTests,hiddenTests,timeLimitSeconds,memoryLimitMB"></textarea>
-          <span class="helper">MCQ options use | as separator. Coding languages use |. JSON columns must be valid JSON strings.</span>
+          <span class="helper">MCQ options use | as separator. For coding, set domainId as "General" or leave blank; test cases can be written as "4 -&gt; 16 | 5 -&gt; 25".</span>
         </div>
       `;
     }
@@ -1705,13 +1839,33 @@
   }
 
   function parseTests(value, label) {
-    try {
-      const x = JSON.parse(value || '[]');
-      if (!Array.isArray(x)) throw new Error();
-      return x;
-    } catch (_) {
-      throw new Error(`${label} must be a valid JSON array.`);
+    if (!value || (typeof value === 'string' && !value.trim())) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        try {
+          const x = JSON.parse(trimmed);
+          if (Array.isArray(x)) return x;
+        } catch (_) {}
+      }
+      // Parse human-friendly arrow syntax: "input -> output | input -> output" or multiline
+      const parts = trimmed.split(/[\r\n|]+/).map(p => p.trim()).filter(Boolean);
+      const tests = [];
+      for (const part of parts) {
+        if (part.includes('->')) {
+          const [inp, outp] = part.split('->').map(s => s.trim());
+          tests.push({ input: inp ?? '', output: outp ?? '' });
+        } else if (part.includes(':')) {
+          const [inp, outp] = part.split(':').map(s => s.trim());
+          tests.push({ input: inp ?? '', output: outp ?? '' });
+        } else {
+          tests.push({ input: part, output: part });
+        }
+      }
+      if (tests.length > 0) return tests;
     }
+    throw new Error(`${label} must be a valid JSON array or arrow syntax (e.g. 4 -> 16 | 5 -> 25).`);
   }
 
   function csvRows(text) {
@@ -1763,10 +1917,15 @@
 
     for (const { row, values: v } of parsed) {
       const fail = msg => { throw new Error(`Row ${row}: ${msg}`); };
-      const domain = state.domains.find(d => String(d.id) === v.domainId || d.name.toLowerCase() === String(v.domainId || '').toLowerCase());
-      if (!domain) fail(`domainId "${v.domainId}" must match an existing domain ID or name.`);
 
       const type = String(v.type || '').toUpperCase() === 'CODING' ? 'Coding' : 'MCQ';
+
+      let domain = state.domains.find(d => String(d.id) === v.domainId || d.name.toLowerCase() === String(v.domainId || '').toLowerCase());
+      if (!domain && (type === 'Coding' || !v.domainId || ['general', 'common', 'all', '0', ''].includes(String(v.domainId || '').toLowerCase()))) {
+        domain = state.domains.find(d => d.name.toLowerCase() === 'general') || state.domains[0];
+      }
+      if (!domain) fail(`domainId "${v.domainId}" must match an existing domain ID or name.`);
+
       const item = {
         domainId: domain.id,
         type,
@@ -1779,9 +1938,22 @@
         item.data.options = String(v.options || '').split('|').map(x => x.trim()).filter(Boolean);
         item.data.correctOption = String(v.correctOption || 'A').toUpperCase();
       } else {
-        item.data.languages = String(v.languages || 'Python').split('|').map(x => x.trim()).filter(Boolean);
+        item.data.languages = String(v.languages || 'Python|Java').split('|').map(x => x.trim()).filter(Boolean);
         try {
-          item.data.starterCodes = JSON.parse(v.starterCodes || '{}');
+          let starters = {};
+          if (v.starterCodes && v.starterCodes.trim()) {
+            if (v.starterCodes.trim().startsWith('{')) {
+              starters = JSON.parse(v.starterCodes);
+            } else {
+              starters = { Python: v.starterCodes };
+            }
+          } else {
+            starters = {
+              Python: 'value = input()\nprint(value)',
+              Java: 'import java.util.Scanner;\n\npublic class Solution {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        if (sc.hasNextLine()) {\n            System.out.println(sc.nextLine());\n        }\n    }\n}'
+            };
+          }
+          item.data.starterCodes = starters;
           item.data.sampleTests = parseTests(v.sampleTests, 'sampleTests');
           item.data.hiddenTests = parseTests(v.hiddenTests, 'hiddenTests');
         } catch (e) {
@@ -1794,6 +1966,7 @@
     }
     return items;
   }
+
 
   function parseBulkStudentsCsv(text) {
     const parsed = csvRows(String(text || ''));
@@ -1841,7 +2014,7 @@
     const rows = [
       ['domainId', 'type', 'title', 'difficulty', 'options', 'correctOption', 'languages', 'starterCodes', 'sampleTests', 'hiddenTests', 'timeLimitSeconds', 'memoryLimitMB'],
       [state.domains[0]?.id || '1', 'MCQ', 'Which keyword creates a constant in JavaScript?', 'Easy', 'var|let|const|def', 'C', '', '', '', '', '', ''],
-      [state.domains[0]?.id || '1', 'Coding', 'Read one integer and print its square.', 'Easy', '', '', 'Python|JavaScript', '{"Python":"n = int(input())\\nprint(n * n)"}', '[{"input":"4","output":"16"}]', '[{"input":"7","output":"49"}]', '3', '256']
+      ['General', 'Coding', 'Read one integer and print its square.', 'Easy', '', '', 'Python|Java', '', '4 -> 16 | 5 -> 25', '7 -> 49 | 10 -> 100', '3', '256']
     ];
     downloadCsv('questions-template.csv', rows);
   }
@@ -2432,6 +2605,27 @@
       return;
     }
 
+    const qTab = e.target.closest('[data-set-question-tab]');
+    if (qTab) {
+      state.questionTab = qTab.dataset.setQuestionTab;
+      renderAdmin();
+      return;
+    }
+
+    const addMcq = e.target.closest('[data-add-domain-mcq]');
+    if (addMcq) {
+      const did = Number(addMcq.dataset.addDomainMcq);
+      modalForm('question', { domain_id: did, type: 'MCQ' });
+      return;
+    }
+
+    const addCoding = e.target.closest('[data-add-coding-question]');
+    if (addCoding) {
+      const genDom = state.domains.find(d => d.name.toLowerCase() === 'general') || state.domains[0];
+      modalForm('question', { domain_id: genDom?.id, type: 'Coding' });
+      return;
+    }
+
     const editq = e.target.closest('[data-edit-question]');
     if (editq) {
       modalForm('question', state.questions.find(q => q.id === editq.dataset.editQuestion));
@@ -2442,23 +2636,36 @@
     if (archq) {
       const q = state.questions.find(x => x.id === archq.dataset.archiveQuestion);
       try {
-        if (q.status === 'Published') {
-          await del(`/api/admin/questions/${encodeURIComponent(q.id)}`);
-          toast('Question archived.');
-        } else {
-          await patch(`/api/admin/questions/${encodeURIComponent(q.id)}`, {
-            domainId: q.domain_id,
-            type: q.type,
-            title: q.title,
-            difficulty: q.difficulty,
-            status: 'Published',
-            data: q.data
-          });
-          toast('Question published.');
-        }
+        const nextStatus = q.status === 'Published' ? 'Archived' : 'Published';
+        await patch(`/api/admin/questions/${encodeURIComponent(q.id)}`, {
+          domainId: q.domain_id || q.domainId,
+          type: q.type,
+          title: q.title,
+          difficulty: q.difficulty,
+          status: nextStatus,
+          data: q.data
+        });
         await refreshAdmin();
+        toast(`Question marked as ${nextStatus}.`);
       } catch (err) {
         toast(err.message);
+      }
+      return;
+    }
+
+    const delq = e.target.closest('[data-delete-question]');
+    if (delq) {
+      const qid = delq.dataset.deleteQuestion;
+      const q = state.questions.find(x => x.id === qid);
+      const titlePrompt = q?.title ? `"${q.title.slice(0, 45)}..."` : qid;
+      if (confirm(`Are you sure you want to permanently delete question ${titlePrompt}? This action cannot be undone.`)) {
+        try {
+          await del(`/api/admin/questions/${encodeURIComponent(qid)}`);
+          await refreshAdmin();
+          toast('Question permanently deleted.');
+        } catch (err) {
+          toast(err.message);
+        }
       }
       return;
     }
@@ -2466,6 +2673,23 @@
     const edits = e.target.closest('[data-edit-student]');
     if (edits) {
       modalForm('student', state.students.find(s => s.id === edits.dataset.editStudent));
+      return;
+    }
+
+    const dels = e.target.closest('[data-delete-student]');
+    if (dels) {
+      const sid = dels.dataset.deleteStudent;
+      const s = state.students.find(x => x.id === sid);
+      const sName = s?.name ? `${s.name} (${sid})` : sid;
+      if (confirm(`Are you sure you want to permanently delete student ${sName}? All their test attempts and submission records will also be deleted.`)) {
+        try {
+          await del(`/api/admin/students/${encodeURIComponent(sid)}`);
+          await refreshAdmin();
+          toast(`Student account ${sid} permanently deleted.`);
+        } catch (err) {
+          toast(err.message);
+        }
+      }
       return;
     }
 
@@ -2510,6 +2734,14 @@
     }
     if (e.target.id === 'questionTypeFilter') {
       state.filter.questionType = e.target.value;
+      renderAdmin();
+    }
+    if (e.target.id === 'questionDifficultyFilter') {
+      state.filter.questionDifficulty = e.target.value;
+      renderAdmin();
+    }
+    if (e.target.id === 'questionStatusFilter') {
+      state.filter.questionStatus = e.target.value;
       renderAdmin();
     }
     if (e.target.id === 'studentDomainFilter') {

@@ -240,3 +240,51 @@
   color: #185e4b;
   background: #e4efe7;
 }
+
+/* Link button variations and question domain grouping */
+.link-button {
+  transition: all 0.15s ease;
+}
+.link-button:hover {
+  text-decoration: underline;
+}
+.link-button.danger {
+  color: var(--red, #b64b42) !important;
+}
+.link-button.danger:hover {
+  color: #902720 !important;
+}
+
+.domain-group-card {
+  margin-bottom: 22px;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.domain-group-head {
+  padding: 16px 20px;
+  background: #fbfdfb;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.domain-group-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.domain-group-title h3 {
+  margin: 0;
+  font: 700 15px Manrope, sans-serif;
+  letter-spacing: -0.2px;
+}
+.domain-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

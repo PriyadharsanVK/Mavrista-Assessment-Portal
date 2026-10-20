@@ -151,6 +151,21 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(clean_res['ok'])
         self.assertIn('deleted',clean_res)
 
+        # Test Question deletion
+        status,del_q_res,_=self.request('DELETE',f"/api/admin/questions/{mcq['id']}",admin)
+        self.assertEqual(status,200,del_q_res)
+        self.assertTrue(del_q_res.get('ok'))
+
+        # Test Student deletion
+        status,del_st_res,_=self.request('DELETE','/api/admin/students/ST-SHORT',admin)
+        self.assertEqual(status,200,del_st_res)
+        self.assertTrue(del_st_res.get('ok'))
+
+        # Test General domain coding question creation
+        status,gen_code,_=self.request('POST','/api/admin/questions',admin,{'domainId':'General','type':'Coding','title':'Sum two numbers','difficulty':'Easy','data':{'languages':['Python'],'starterCodes':{'Python':'print(sum(map(int, input().split())))'},'sampleTests':[{'input':'2 3','output':'5'}],'hiddenTests':[{'input':'10 20','output':'30'}]}})
+        self.assertEqual(status,201,gen_code)
+        self.assertTrue(gen_code.get('id', '').startswith('Q-'))
+
         # Test session inactivity timeout
         con = server.db()
         con.execute("UPDATE sessions SET expires_at=?", (server.stamp(server.now_utc() - timedelta(minutes=35)),))
@@ -159,3 +174,5 @@ class ApiTest(unittest.TestCase):
         self.assertIn('inactivity',expired_res.get('error','').lower())
 
 if __name__=='__main__': unittest.main()
+
+

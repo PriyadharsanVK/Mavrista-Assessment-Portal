@@ -171,6 +171,13 @@ def sync_sheets_row(sheet: str, data: dict) -> None:
     payload = {'action': 'append', 'sheet': sheet, 'data': data}
     threading.Thread(target=post_to_sheets, args=(payload,), daemon=True).start()
 
+def delete_sheets_row(sheet: str, id_value: str, id_column: int = 1) -> None:
+    url = get_sheets_url()
+    if not url:
+        return
+    payload = {'action': 'delete', 'sheet': sheet, 'id': str(id_value), 'idColumn': id_column}
+    threading.Thread(target=post_to_sheets, args=(payload,), daemon=True).start()
+
 # ─── DATA RETENTION / CLEANUP ──────────────────────────────────────────────
 
 RETENTION_DAYS_DEFAULT = 90  # default: delete old closed attempts after 90 days
@@ -639,6 +646,17 @@ class Handler(BaseHTTPRequestHandler):
                 return 201, {'student':{'id':sid,'name':name,'email':email,'domainId':domain['id'],'domain':domain['name'],'status':'Active'}, 'temporaryPassword': temp_pwd}
             sid=unquote(path.rsplit('/',1)[-1]); row=con.execute('SELECT * FROM users WHERE id=? AND role="student"',(sid,)).fetchone()
             if not row: raise ApiError(404,'Student not found.')
+            if method=='DELETE':
+                con.execute('BEGIN IMMEDIATE')
+                try:
+                    con.execute('DELETE FROM attempts WHERE student_id=?', (sid,))
+                    con.execute('DELETE FROM users WHERE id=? AND role="student"', (sid,))
+                    con.execute('COMMIT')
+                except Exception:
+                    con.execute('ROLLBACK')
+                    raise
+                delete_sheets_row('Students', sid, 1)
+                return 200, {'ok': True}
             data=self.read_json()
             if method=='PATCH':
                 name=required_text(data,'name',120); email=required_text(data,'email',254); status=enum(data.get('status','Active'),['Active','Disabled'],'status')
@@ -708,8 +726,17 @@ class Handler(BaseHTTPRequestHandler):
                 sync_sheets_row('Questions', {'Question ID': qid, 'Domain': dom['name'] if dom else '', 'Type': q['type'], 'Difficulty': q['difficulty'], 'Title': q['title'], 'Options': _opts, 'Correct Option': _correct, 'Languages': _langs, 'Sample Tests': _sample, 'Hidden Tests': _hidden, 'Time Limit (s)': _tlimit, 'Memory Limit (MB)': _mlimit, 'Status': q['status'], 'Created At': stamp()})
                 return (201 if method=='POST' else 200), {'id':qid}
             if method=='DELETE':
-                qid=unquote(path.rsplit('/',1)[-1]); cur=con.execute('UPDATE questions SET status="Archived",version=version+1 WHERE id=?',(qid,))
+                qid=unquote(path.rsplit('/',1)[-1])
+                con.execute('BEGIN IMMEDIATE')
+                try:
+                    con.execute('DELETE FROM attempt_questions WHERE question_id=?',(qid,))
+                    cur=con.execute('DELETE FROM questions WHERE id=?',(qid,))
+                    con.execute('COMMIT')
+                except Exception:
+                    con.execute('ROLLBACK')
+                    cur=con.execute('UPDATE questions SET status="Archived",version=version+1 WHERE id=?',(qid,))
                 if not cur.rowcount: raise ApiError(404,'Question not found.')
+                delete_sheets_row('Questions', qid, 1)
                 return 200, {'ok':True}
 
         if path == '/api/admin/assessments' or path.startswith('/api/admin/assessments/'):
@@ -730,7 +757,9 @@ class Handler(BaseHTTPRequestHandler):
                 if min(mcq,coding)<0 or mcq+coding<1: raise ApiError(400,'Choose at least one question; counts cannot be negative.')
                 counts={r['type']:r['n'] for r in con.execute('SELECT type,count(*) n FROM questions WHERE domain_id=? AND status="Published" GROUP BY type',(did,))}
                 if mcq>counts.get('MCQ',0): raise ApiError(400,f"This domain has {counts.get('MCQ',0)} published MCQs.")
-                if coding>counts.get('Coding',0): raise ApiError(400,f"This domain has {counts.get('Coding',0)} published coding questions.")
+                coding_pool = con.execute('''SELECT count(*) n FROM questions WHERE type="Coding" AND status="Published" 
+                    AND (domain_id=? OR domain_id IN (SELECT id FROM domains WHERE name="General" COLLATE NOCASE OR category="Software"))''', (did,)).fetchone()['n']
+                if coding>coding_pool: raise ApiError(400,f"There are {coding_pool} published coding questions available in the pool.")
                 con.execute('''INSERT INTO assessments(id,domain_id,title,starts_at,duration_min,mcq_count,coding_count,status,created_at)
                   VALUES(?,?,?,?,?,?,?,? ,?) ON CONFLICT(id) DO UPDATE SET domain_id=excluded.domain_id,title=excluded.title,starts_at=excluded.starts_at,duration_min=excluded.duration_min,mcq_count=excluded.mcq_count,coding_count=excluded.coding_count,status=excluded.status''',
                   (aid,did,title,stamp(starts),duration,mcq,coding,enum(data.get('status','Scheduled'),['Scheduled','Draft','Cancelled'],'status'),stamp()))
@@ -793,8 +822,13 @@ class Handler(BaseHTTPRequestHandler):
                 con.execute('BEGIN IMMEDIATE')
                 con.execute('INSERT INTO attempts(id,assessment_id,student_id,started_at,deadline_at) VALUES(?,?,?,?,?)',(attempt,aid,session['id'],stamp(now),stamp(end)))
                 selected=[]
-                for typ,count in [('MCQ',assessment['mcq_count']),('Coding',assessment['coding_count'])]:
-                    selected.extend(con.execute('SELECT * FROM questions WHERE domain_id=? AND type=? AND status="Published" ORDER BY random() LIMIT ?',(assessment['domain_id'],typ,count)).fetchall())
+                if assessment['mcq_count'] > 0:
+                    selected.extend(con.execute('SELECT * FROM questions WHERE domain_id=? AND type="MCQ" AND status="Published" ORDER BY random() LIMIT ?', (assessment['domain_id'], assessment['mcq_count'])).fetchall())
+                if assessment['coding_count'] > 0:
+                    selected.extend(con.execute('''SELECT * FROM questions 
+                        WHERE type="Coding" AND status="Published" 
+                        AND (domain_id=? OR domain_id IN (SELECT id FROM domains WHERE name="General" COLLATE NOCASE OR category="Software")) 
+                        ORDER BY random() LIMIT ?''', (assessment['domain_id'], assessment['coding_count'])).fetchall())
                 if len(selected)!=assessment['mcq_count']+assessment['coding_count']:
                     con.execute('ROLLBACK'); raise ApiError(409,'The question pool changed. Contact your administrator before starting.')
                 for idx,row in enumerate(selected):
@@ -960,9 +994,20 @@ def path_id(path):
     except ValueError: raise ApiError(400,'Invalid record ID.')
 
 def domain_id_for(con, value):
-    try: did=int(value)
-    except (ValueError,TypeError): raise ApiError(400,'Select a valid domain.')
-    if not con.execute('SELECT 1 FROM domains WHERE id=? AND status="Active"',(did,)).fetchone(): raise ApiError(400,'Select an active domain.')
+    v_str = str(value or '').strip()
+    if not v_str or v_str.lower() in ('general', 'common', 'all', '0'):
+        gen = con.execute('SELECT id FROM domains WHERE name="General" COLLATE NOCASE').fetchone()
+        if gen: return gen['id']
+        con.execute('INSERT INTO domains(name,category,description,icon,created_at) VALUES(?,?,?,?,?)',
+                    ('General','Software','General coding questions and problem-solving pool','💻',stamp()))
+        return con.execute('SELECT id FROM domains WHERE name="General" COLLATE NOCASE').fetchone()['id']
+    try: did = int(v_str)
+    except ValueError:
+        row = con.execute('SELECT id FROM domains WHERE name=? COLLATE NOCASE AND status="Active"', (v_str,)).fetchone()
+        if row: return row['id']
+        raise ApiError(400, f'Domain "{v_str}" was not found.')
+    if not con.execute('SELECT 1 FROM domains WHERE id=? AND status="Active"', (did,)).fetchone():
+        raise ApiError(400, 'Select an active domain.')
     return did
 
 def validate_question(data):
@@ -1021,6 +1066,9 @@ def bootstrap():
     # Clean up expired sessions on startup
     con = db()
     con.execute('DELETE FROM sessions WHERE expires_at < ?', (stamp(),))
+    if not con.execute('SELECT 1 FROM domains WHERE name="General" COLLATE NOCASE').fetchone():
+        con.execute('INSERT INTO domains(name,category,description,icon,created_at) VALUES(?,?,?,?,?)',
+                    ('General','Software','General coding questions and problem-solving pool','💻',stamp()))
     con.commit()
     email=os.environ.get('ASSESSMENT_BOOTSTRAP_ADMIN','').strip(); password=os.environ.get('ASSESSMENT_BOOTSTRAP_PASSWORD',''); name=os.environ.get('ASSESSMENT_BOOTSTRAP_NAME','Assessment Admin')
     if email and password:
