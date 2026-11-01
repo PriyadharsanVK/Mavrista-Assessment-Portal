@@ -91,19 +91,20 @@ class ApiTest(unittest.TestCase):
             self.assertEqual(status,200);self.assertEqual(event['autoSubmitted'],i==3)
         status,closed,_=self.request('GET',f"/api/student/attempts/{attempt['attempt']['id']}",student)
         self.assertEqual(status,200);self.assertEqual(closed['attempt']['status'],'Submitted')
-        self.assertIsNone(closed['attempt']['score'])
+        self.assertIsNone(closed['attempt']['score'])  # Score not exposed to student
         status,_,_=self.request('POST','/api/student/attempts/start',student,{'assessmentId':'A-TEST'})
         self.assertEqual(status,409)
         status,flags,_=self.request('GET','/api/admin/flags',admin)
         self.assertEqual(status,200);self.assertEqual(sum(f['event_type']=='visibility' for f in flags['flags']),3);self.assertEqual(sum(f['event_type']=='fullscreen' for f in flags['flags']),1)
         status,results,_=self.request('GET','/api/admin/results',admin)
-        self.assertEqual(status,200);self.assertIsNone(results['results'][0]['score'])
+        self.assertEqual(status,200);self.assertEqual(results['results'][0]['score'], 1)  # Admin sees score
         status,detail,_=self.request('GET',f"/api/admin/results/{attempt['attempt']['id']}",admin)
         self.assertEqual(status,200)
         mcq_detail=next(x for x in detail['answers'] if x['question']['type']=='MCQ')
-        self.assertNotIn('isCorrect',mcq_detail['question'])
+        self.assertTrue(mcq_detail['question']['isCorrect'])  # Admin sees isCorrect
+        self.assertIn('correctOption', mcq_detail['question'])  # Admin sees correctOption
         coding_detail=next(x for x in detail['answers'] if x['question']['type']=='Coding')
-        self.assertNotIn('hiddenTests',coding_detail['question'])
+        self.assertNotIn('hiddenTests',coding_detail['question'])  # hiddenTests not in snapshot
 
         # Test Domain PATCH
         status,patched,_=self.request('PATCH',f"/api/admin/domains/{domain['id']}",admin,{'name':'Java Advanced','category':'Software'})
@@ -287,11 +288,13 @@ class ApiTest(unittest.TestCase):
             self.assertEqual(all_wrong_failed, 10, f"Expected exactly 10 failures when all wrong, got {all_wrong_failed}")
             self.assertEqual(all_wrong_res['hiddenPassed'], 5)
 
-            # 5. Submit attempt: verify no auto-evaluation score is assigned (manual evaluation)
+            # 5. Submit attempt: verify evaluation ran and score is stored
             status, sub_att, _ = self.request('POST', f'/api/student/attempts/{att_id}/submit', student, {'reason': 'Completed test'})
             self.assertEqual(status, 200, sub_att)
-            self.assertIsNone(sub_att['score']['score'])
-            self.assertEqual(sub_att['score']['gradingStatus'], 'Submitted')
+            # Student submit response shows score (the actual computed score)
+            self.assertIsNotNone(sub_att['score']['score'])
+            self.assertEqual(sub_att['score']['maxScore'], 1)
+            self.assertIn(sub_att['score']['gradingStatus'], ['Graded', 'Pending runner'])
 
             # 6. Verify Health Endpoint
             status, health, _ = self.request('GET', '/api/health')

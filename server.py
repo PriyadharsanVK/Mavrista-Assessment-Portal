@@ -796,10 +796,20 @@ class Handler(BaseHTTPRequestHandler):
                     LEFT JOIN answers an ON an.attempt_id=aq.attempt_id AND an.question_id=aq.question_id WHERE aq.attempt_id=? ORDER BY aq.ordinal''',(attempt_id,)).fetchall()
                 answers=[]
                 for q in questions:
-                    question=json.loads(q['snapshot_json']); answer=json.loads(q['answer_json']) if q['answer_json'] else None
+                    question=json.loads(q['snapshot_json']); grading=json.loads(q['grading_json']) if q['grading_json'] else {}
+                    answer=json.loads(q['answer_json']) if q['answer_json'] else None
                     if question['type']=='MCQ':
                         selected=answer.get('optionIndex') if isinstance(answer,dict) else None
+                        correct_letter=grading.get('correctOption','')
+                        expected=ord(correct_letter)-65 if correct_letter in ('A','B','C','D') else -1
                         question['selectedOption']=selected
+                        question['correctOption']=correct_letter
+                        question['isCorrect']=(isinstance(selected,int) and selected==expected)
+                    elif question['type']=='Coding':
+                        # Show hidden test summary from stored answer if available
+                        if isinstance(answer,dict) and 'hiddenPassed' in answer:
+                            question['hiddenPassed']=answer['hiddenPassed']
+                            question['hiddenTotal']=answer['hiddenTotal']
                     answers.append({'question':question,'answer':answer})
                 return 200, {'attempt':dict(attempt),'answers':answers}
             rows=con.execute('''SELECT t.id,t.status,t.started_at,t.submitted_at,t.submit_reason,t.score,t.max_score,t.grading_status,
@@ -956,23 +966,34 @@ class Handler(BaseHTTPRequestHandler):
         rows=con.execute('''SELECT aq.question_id,aq.snapshot_json,aq.grading_json,an.answer_json
             FROM attempt_questions aq LEFT JOIN answers an ON an.attempt_id=aq.attempt_id AND an.question_id=aq.question_id
             WHERE aq.attempt_id=? ORDER BY aq.ordinal''',(attempt_id,)).fetchall()
-        con.execute('UPDATE attempts SET score=NULL,max_score=?,grading_status="Submitted" WHERE id=?',(len(rows),attempt_id))
-        att=con.execute('''SELECT t.*, u.id student_id, u.name student_name, a.title assessment_title, coalesce(d.name, "") domain_name
-            FROM attempts t JOIN users u ON u.id=t.student_id JOIN assessments a ON a.id=t.assessment_id
-            LEFT JOIN domains d ON d.id=a.domain_id WHERE t.id=?''', (attempt_id,)).fetchone()
-        if att:
-            sync_sheets_row('Results', {
-                'Attempt ID': att['id'],
-                'Student ID': att['student_id'],
-                'Student Name': att['student_name'],
-                'Assessment': att['assessment_title'],
-                'Domain': att['domain_name'],
-                'Status': att['status'],
-                'Started At': att['started_at'],
-                'Submitted At': att['submitted_at'],
-                'Submit Reason': att['submit_reason'] or ''
-            })
-        return {'score':None,'maxScore':len(rows),'gradingStatus':'Submitted'}
+        score=0; pending=False
+        for row in rows:
+            question=json.loads(row['snapshot_json']); grading=json.loads(row['grading_json']) if row['grading_json'] else {}
+            answer=json.loads(row['answer_json']) if row['answer_json'] else None
+            if question['type']=='MCQ':
+                correct_letter=grading.get('correctOption','')
+                expected=ord(correct_letter)-65 if correct_letter in ('A','B','C','D') else -1
+                if isinstance(answer,dict) and answer.get('optionIndex')==expected: score+=1
+            elif question['type']=='Coding':
+                if isinstance(answer,dict) and answer.get('language') in question.get('languages',[]):
+                    code=answer.get('drafts',{}).get(answer['language'],'')
+                    hidden_tests=grading.get('hiddenTests',[])
+                    try:
+                        raw_res=run_isolated(answer['language'],code,hidden_tests,grading.get('timeLimitSeconds',3))
+                        final_hidden=apply_hidden_test_failure_rule(raw_res)
+                        passed_hidden=sum(1 for r in final_hidden if r.get('passed'))
+                        total_hidden=len(hidden_tests)
+                        threshold=max(1,total_hidden-5) if total_hidden>=5 else total_hidden
+                        awarded=(passed_hidden>=threshold)
+                        if awarded: score+=1
+                        updated_answer={**answer,'hiddenResults':final_hidden,'hiddenPassed':passed_hidden,'hiddenTotal':total_hidden}
+                        con.execute('INSERT INTO answers VALUES(?,?,?,?) ON CONFLICT(attempt_id,question_id) DO UPDATE SET answer_json=excluded.answer_json,updated_at=excluded.updated_at',
+                            (attempt_id,row['question_id'],json.dumps(updated_answer),stamp()))
+                    except ApiError as err:
+                        if err.status==503: pending=True
+                        else: raise
+        status='Pending runner' if pending else 'Graded'
+        con.execute('UPDATE attempts SET score=?,max_score=?,grading_status=? WHERE id=?',(score,len(rows),status,attempt_id))
         att=con.execute('''SELECT t.*, u.id student_id, u.name student_name, a.title assessment_title, coalesce(d.name, "") domain_name
             FROM attempts t JOIN users u ON u.id=t.student_id JOIN assessments a ON a.id=t.assessment_id
             LEFT JOIN domains d ON d.id=a.domain_id WHERE t.id=?''', (attempt_id,)).fetchone()
@@ -995,7 +1016,10 @@ class Handler(BaseHTTPRequestHandler):
     def attempt_json(self, con, attempt_id, student_id):
         a=con.execute('SELECT t.*,asmt.title assessment_title,asmt.duration_min FROM attempts t JOIN assessments asmt ON asmt.id=t.assessment_id WHERE t.id=? AND t.student_id=?',(attempt_id,student_id)).fetchone()
         qs=con.execute('SELECT aq.question_id,aq.ordinal,aq.snapshot_json,an.answer_json FROM attempt_questions aq LEFT JOIN answers an ON an.attempt_id=aq.attempt_id AND an.question_id=aq.question_id WHERE aq.attempt_id=? ORDER BY aq.ordinal',(attempt_id,)).fetchall()
-        return {'attempt':dict(a),'questions':[json.loads(q['snapshot_json'])|{'ordinal':q['ordinal'],'answer':json.loads(q['answer_json']) if q['answer_json'] else None} for q in qs]}
+        # Strip score/grading from student-facing response — only admin may see evaluation results
+        attempt_data={k:v for k,v in dict(a).items() if k not in ('score','max_score','grading_status')}
+        attempt_data['score']=None  # Explicitly None so JS callers don't break
+        return {'attempt':attempt_data,'questions':[json.loads(q['snapshot_json'])|{'ordinal':q['ordinal'],'answer':json.loads(q['answer_json']) if q['answer_json'] else None} for q in qs]}
 
     def user_json(self,user): return {'id':user['id'],'name':user['name'],'email':user['email'],'role':user['role'],'domainId':user['domain_id']}
 

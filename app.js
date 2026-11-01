@@ -920,8 +920,8 @@
         ${pageHead(
           'Submissions',
           'Candidate submissions',
-          'Server-recorded student submissions and answers for manual administrator evaluation.',
-          `<button type="button" class="button secondary" data-action="export-results">↓ Export submissions (CSV / Google Sheets)</button>`
+          'Server-recorded student submissions with automated scoring. Full answers available via "View answers".',
+          `<button type="button" class="button secondary" data-action="export-results">↓ Export results (CSV / Google Sheets)</button>`
         )}
 
         <section class="card">
@@ -934,7 +934,8 @@
                   <th>Domain</th>
                   <th>Started</th>
                   <th>Submitted</th>
-                  <th>Status</th>
+                  <th>Score</th>
+                  <th>Grading</th>
                   <th></th>
                 </tr>
               </thead>
@@ -946,12 +947,13 @@
                     <td>${esc(r.domain)}</td>
                     <td>${fmt(r.started_at)}</td>
                     <td>${fmt(r.submitted_at)}</td>
-                    <td>${pill(r.status, r.status === 'Submitted' ? 'green' : 'amber')}</td>
+                    <td>${r.score !== null && r.score !== undefined ? `<strong>${r.score}</strong> / ${r.max_score}` : '<span style="color:var(--muted)">—</span>'}</td>
+                    <td>${pill(r.grading_status || r.status, (r.grading_status === 'Graded') ? 'green' : 'amber')}</td>
                     <td>
                       <button type="button" class="link-button" data-result="${esc(r.id)}">View answers</button>
                     </td>
                   </tr>
-                `).join('') || '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--muted)">No assessment attempts submitted yet.</td></tr>'}
+                `).join('') || '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--muted)">No assessment attempts submitted yet.</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -962,12 +964,15 @@
 
   function showResult(data) {
     const a = data.attempt;
+    const scoreHtml = (a.score !== null && a.score !== undefined)
+      ? `<span style="margin-left:16px;font-weight:600">${a.score} / ${a.max_score} <span style="font-weight:400;color:var(--muted)">(${Math.round(a.score/a.max_score*100)}%)</span></span>`
+      : `<span style="margin-left:16px;color:var(--muted)">${a.grading_status || 'Not graded'}</span>`;
     modal.innerHTML = `
       <div class="modal-inner wide">
         <div class="modal-head">
           <div>
             <h2>${esc(a.student)} · ${esc(a.assessment)}</h2>
-            <p>${esc(a.student_id)} · ${esc(a.domain)} · Status: <strong>${esc(a.status)}</strong></p>
+            <p>${esc(a.student_id)} · ${esc(a.domain)} · Status: <strong>${esc(a.status)}</strong>${scoreHtml}</p>
           </div>
           <button type="button" class="close-modal" data-action="close-modal">×</button>
         </div>
@@ -977,20 +982,27 @@
             const answer = item.answer;
             if (q.type === 'MCQ') {
               const selected = Number.isInteger(q.selectedOption) ? q.options[q.selectedOption] : 'Not answered';
+              const correctIdx = q.correctOption ? q.correctOption.charCodeAt(0) - 65 : -1;
+              const correctText = correctIdx >= 0 && q.options?.[correctIdx] ? q.options[correctIdx] : q.correctOption || '—';
+              const isCorrect = q.isCorrect;
               return `
                 <section class="card">
                   <div class="card-title">${i + 1}. ${esc(q.title)}</div>
                   <div class="table-meta">Multiple Choice Question</div>
-                  <p style="margin:8px 0 4px">Candidate answer: <b>${esc(selected)}</b></p>
+                  <p style="margin:8px 0 4px">Candidate answer: <b>${esc(selected)}</b> &nbsp; ${isCorrect ? pill('Correct', 'green') : pill('Incorrect', 'red')}</p>
+                  ${!isCorrect ? `<p style="margin:4px 0;font-size:13px;color:var(--muted)">Correct answer: <b>${esc(correctText)}</b></p>` : ''}
                 </section>
               `;
             }
             const language = answer?.language || '—';
             const code = answer?.drafts?.[language] || '';
+            const hiddenBadge = (typeof answer?.hiddenPassed === 'number')
+              ? `<span style="margin-left:8px">${pill(`${answer.hiddenPassed} / ${answer.hiddenTotal} hidden passed`, answer.hiddenPassed >= answer.hiddenTotal - 5 ? 'green' : 'red')}</span>`
+              : '';
             return `
               <section class="card">
                 <div class="card-title">${i + 1}. ${esc(q.title)}</div>
-                <div class="table-meta">Coding Challenge · Language: ${esc(language)}</div>
+                <div class="table-meta">Coding Challenge · Language: ${esc(language)}${hiddenBadge}</div>
                 <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f7f4;padding:12px;border-radius:9px;font-size:11px;margin-top:10px">${esc(code || 'Not answered')}</pre>
               </section>
             `;
@@ -2043,21 +2055,21 @@
   }
 
   function exportResultsCsv() {
-    if (!state.results.length) return toast('No submissions available to export.');
-    const header = ['Student ID', 'Student Name', 'Assessment', 'Domain', 'Status', 'Started At (IST)', 'Submitted At (IST)', 'Submit Reason'];
+    if (!state.results.length) return toast('No results available to export.');
+    const header = ['Student ID', 'Student Name', 'Assessment', 'Domain', 'Status', 'Score', 'Max Score', 'Percentage', 'Grading Status', 'Started At (IST)', 'Submitted At (IST)', 'Submit Reason'];
     const rows = [header, ...state.results.map(r => [
       r.student_id,
       r.student,
       r.assessment,
       r.domain,
       r.status,
+      r.score !== null && r.score !== undefined ? r.score : '',
+      r.max_score || '',
+      (r.score !== null && r.score !== undefined && r.max_score) ? Math.round(r.score / r.max_score * 100) + '%' : '',
+      r.grading_status || '',
       fmt(r.started_at),
       fmt(r.submitted_at),
       r.submit_reason || ''
-    ])];
-    downloadCsv(`assessment-submissions-${new Date().toISOString().slice(0, 10)}.csv`, rows);
-    toast('Submissions exported to CSV for Google Sheets.');
-  }
     ])];
     downloadCsv(`assessment-results-${new Date().toISOString().slice(0, 10)}.csv`, rows);
     toast('Results exported to CSV for Google Sheets.');
