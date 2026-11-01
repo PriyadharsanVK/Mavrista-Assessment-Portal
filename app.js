@@ -918,10 +918,10 @@
     return `
       <div class="page">
         ${pageHead(
-          'Attempts',
-          'Assessment results',
-          'Server-recorded submissions, scores, and integrity signals.',
-          `<button type="button" class="button secondary" data-action="export-results">↓ Export results (CSV / Google Sheets)</button>`
+          'Submissions',
+          'Candidate submissions',
+          'Server-recorded student submissions and answers for manual administrator evaluation.',
+          `<button type="button" class="button secondary" data-action="export-results">↓ Export submissions (CSV / Google Sheets)</button>`
         )}
 
         <section class="card">
@@ -935,8 +935,6 @@
                   <th>Started</th>
                   <th>Submitted</th>
                   <th>Status</th>
-                  <th>Score</th>
-                  <th>Grading</th>
                   <th></th>
                 </tr>
               </thead>
@@ -949,13 +947,11 @@
                     <td>${fmt(r.started_at)}</td>
                     <td>${fmt(r.submitted_at)}</td>
                     <td>${pill(r.status, r.status === 'Submitted' ? 'green' : 'amber')}</td>
-                    <td><strong>${r.score === null ? '—' : `${r.score} / ${r.max_score}`}</strong></td>
-                    <td>${esc(r.grading_status)}</td>
                     <td>
                       <button type="button" class="link-button" data-result="${esc(r.id)}">View answers</button>
                     </td>
                   </tr>
-                `).join('') || '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--muted)">No assessment attempts submitted yet.</td></tr>'}
+                `).join('') || '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--muted)">No assessment attempts submitted yet.</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -971,7 +967,7 @@
         <div class="modal-head">
           <div>
             <h2>${esc(a.student)} · ${esc(a.assessment)}</h2>
-            <p>${esc(a.student_id)} · ${esc(a.domain)} · Score: <strong>${a.score ?? '—'} / ${a.max_score ?? '—'}</strong> (${a.status})</p>
+            <p>${esc(a.student_id)} · ${esc(a.domain)} · Status: <strong>${esc(a.status)}</strong></p>
           </div>
           <button type="button" class="close-modal" data-action="close-modal">×</button>
         </div>
@@ -981,13 +977,11 @@
             const answer = item.answer;
             if (q.type === 'MCQ') {
               const selected = Number.isInteger(q.selectedOption) ? q.options[q.selectedOption] : 'Not answered';
-              const correct = q.options['ABCD'.indexOf(q.correctOption)] || '—';
               return `
                 <section class="card">
                   <div class="card-title">${i + 1}. ${esc(q.title)}</div>
-                  <div class="table-meta">MCQ · ${pill(q.isCorrect ? 'Correct' : 'Incorrect', q.isCorrect ? 'green' : 'red')}</div>
-                  <p style="margin:8px 0 4px">Student answer: <b>${esc(selected)}</b></p>
-                  <p style="margin:0;color:var(--muted)">Correct answer: <b>${esc(correct)}</b></p>
+                  <div class="table-meta">Multiple Choice Question</div>
+                  <p style="margin:8px 0 4px">Candidate answer: <b>${esc(selected)}</b></p>
                 </section>
               `;
             }
@@ -996,7 +990,7 @@
             return `
               <section class="card">
                 <div class="card-title">${i + 1}. ${esc(q.title)}</div>
-                <div class="table-meta">Coding · ${esc(language)}</div>
+                <div class="table-meta">Coding Challenge · Language: ${esc(language)}</div>
                 <pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f4f7f4;padding:12px;border-radius:9px;font-size:11px;margin-top:10px">${esc(code || 'Not answered')}</pre>
               </section>
             `;
@@ -1316,17 +1310,37 @@
                 `).join('')}
               </div>
             ` : `
+              ${(q.sampleTests && q.sampleTests.length > 0) ? `
+                <div class="sample-tests-preview" style="margin: 16px 0 20px;">
+                  <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">
+                    Sample Test Cases (${q.sampleTests.length} Public Cases)
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:8px">
+                    ${q.sampleTests.map((t, idx) => `
+                      <div style="background:#f9fbf9;border:1px solid var(--line);border-radius:8px;padding:10px 14px;font-size:12px">
+                        <div style="font-weight:600;margin-bottom:4px;color:var(--text)">Sample Test ${idx + 1}</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                          <div><span style="color:var(--muted);font-weight:600">Input:</span><pre style="margin:2px 0 0;font-family:monospace;white-space:pre-wrap;background:#fff;padding:4px 8px;border-radius:4px;border:1px solid var(--line)">${esc(t.input || '(empty)')}</pre></div>
+                          <div><span style="color:var(--muted);font-weight:600">Expected Output:</span><pre style="margin:2px 0 0;font-family:monospace;white-space:pre-wrap;background:#fff;padding:4px 8px;border-radius:4px;border:1px solid var(--line)">${esc(t.output || '(empty)')}</pre></div>
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+
               <div class="field">
                 <label for="codeLanguage">Programming Language</label>
                 <select id="codeLanguage">
                   ${q.languages.map(l => `<option ${lang === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
                 </select>
                 <textarea class="code-answer" id="codeAnswer" rows="15" placeholder="Read from standard input and write to standard output...">${esc(answer.drafts?.[lang] ?? q.starterCodes?.[lang] ?? '')}</textarea>
-                <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
-                  <button type="button" class="button secondary small" data-action="run-code">Run sample tests</button>
-                  <span class="helper">Code execution requires the isolated runner Docker container.</span>
+                <div style="display:flex;gap:10px;margin-top:10px;align-items:center;flex-wrap:wrap">
+                  <button type="button" class="button secondary small" data-action="run-code">▶ Run Sample Tests (${(q.sampleTests || []).length || 3})</button>
+                  <button type="button" class="button primary small" data-action="submit-code">✓ Submit Code (15 Hidden Tests)</button>
+                  <span class="helper">Code execution runs in an isolated runner environment.</span>
                 </div>
-                <div id="runResults" style="margin-top:10px"></div>
+                <div id="runResults" style="margin-top:12px"></div>
               </div>
             `}
 
@@ -2029,21 +2043,21 @@
   }
 
   function exportResultsCsv() {
-    if (!state.results.length) return toast('No results available to export.');
-    const header = ['Student ID', 'Student Name', 'Assessment', 'Domain', 'Status', 'Score', 'Max Score', 'Percentage', 'Grading Status', 'Started At (IST)', 'Submitted At (IST)', 'Submit Reason'];
+    if (!state.results.length) return toast('No submissions available to export.');
+    const header = ['Student ID', 'Student Name', 'Assessment', 'Domain', 'Status', 'Started At (IST)', 'Submitted At (IST)', 'Submit Reason'];
     const rows = [header, ...state.results.map(r => [
       r.student_id,
       r.student,
       r.assessment,
       r.domain,
       r.status,
-      r.score ?? '',
-      r.max_score ?? '',
-      r.score !== null && r.max_score ? `${Math.round((r.score / r.max_score) * 100)}%` : '',
-      r.grading_status,
       fmt(r.started_at),
       fmt(r.submitted_at),
       r.submit_reason || ''
+    ])];
+    downloadCsv(`assessment-submissions-${new Date().toISOString().slice(0, 10)}.csv`, rows);
+    toast('Submissions exported to CSV for Google Sheets.');
+  }
     ])];
     downloadCsv(`assessment-results-${new Date().toISOString().slice(0, 10)}.csv`, rows);
     toast('Results exported to CSV for Google Sheets.');
@@ -2467,28 +2481,114 @@
       return;
     }
     if (action === 'run-code') {
+      const runBtn = document.querySelector('[data-action="run-code"]');
+      const originalText = runBtn ? runBtn.textContent : '';
       try {
+        if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Running sample tests...'; }
         await saveAnswer();
         const q = state.attempt.questions[state.index];
         const answer = q.answer;
         const result = await post(`/api/student/attempts/${encodeURIComponent(state.attempt.attempt.id)}/run`, {
           questionId: q.id,
           language: answer.language,
-          code: answer.drafts[answer.language]
+          code: answer.drafts[answer.language],
+          runType: 'sample'
         });
+        const isAllPassed = result.passed === result.total;
         $('#runResults').innerHTML = `
-          <div class="notice" style="background:#eef6ef;border-color:#c8dfcc">
-            <strong>${result.passed} / ${result.total} sample tests passed</strong>
-            ${result.results.map((r, i) => `<div>Test ${i + 1}: ${r.passed ? '✓ Passed' : `✗ Failed ${r.error ? '· ' + esc(r.error) : ''}`}</div>`).join('')}
+          <div class="notice" style="background:${isAllPassed ? '#eef6ef' : '#fff9f0'};border-color:${isAllPassed ? '#c8dfcc' : '#f0d9b5'}">
+            <strong style="display:block;margin-bottom:6px;color:${isAllPassed ? '#1a7f37' : '#b45309'}">
+              Sample Tests: ${result.passed} / ${result.total} Passed
+            </strong>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              ${result.results.map((r, i) => `
+                <div style="font-size:12px;display:flex;align-items:center;gap:6px">
+                  <span style="font-weight:700;color:${r.passed ? '#1a7f37' : '#cf222e'}">${r.passed ? '✓ Passed' : '✗ Failed'}</span>
+                  <span>Sample Test ${i + 1}</span>
+                  ${r.error ? `<span style="color:#cf222e">· ${esc(r.error)}</span>` : ''}
+                </div>
+              `).join('')}
+            </div>
           </div>
         `;
       } catch (e) {
         $('#runResults').innerHTML = `
           <div class="notice" style="background:#fff6f6;border-color:#fedada;color:#9b2a22">
-            <strong>Runner unavailable</strong>
+            <strong>Execution Notice</strong>
             <div>${esc(e.message)}</div>
           </div>
         `;
+      } finally {
+        if (runBtn) { runBtn.disabled = false; runBtn.textContent = originalText; }
+      }
+      return;
+    }
+    if (action === 'submit-code') {
+      const subBtn = document.querySelector('[data-action="submit-code"]');
+      const originalText = subBtn ? subBtn.textContent : '';
+      try {
+        if (subBtn) { subBtn.disabled = true; subBtn.textContent = 'Evaluating against 15 hidden testcases...'; }
+        await saveAnswer();
+        const q = state.attempt.questions[state.index];
+        const answer = q.answer;
+        const result = await post(`/api/student/attempts/${encodeURIComponent(state.attempt.attempt.id)}/run`, {
+          questionId: q.id,
+          language: answer.language,
+          code: answer.drafts[answer.language],
+          runType: 'submit'
+        });
+
+        q.answer = {
+          language: answer.language,
+          drafts: answer.drafts,
+          execution: {
+            samplePassed: result.samplePassed,
+            sampleTotal: result.sampleTotal,
+            hiddenPassed: result.hiddenPassed,
+            hiddenTotal: result.hiddenTotal
+          }
+        };
+        const mapBtn = document.querySelector(`.qmap-btn[data-index="${state.index}"]`);
+        if (mapBtn) mapBtn.classList.add('answered');
+
+        const failedHidden = result.hiddenTotal - result.hiddenPassed;
+        $('#runResults').innerHTML = `
+          <div class="notice" style="background:#f4fbf4;border-color:#bce3c5">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <strong style="font-size:14px;color:#185e4b">✓ Code Evaluation Complete</strong>
+              <span style="font-size:12px;color:var(--muted)">Draft saved</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+              <div style="background:#fff;padding:8px 12px;border-radius:6px;border:1px solid #d3ebd8">
+                <div style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:600">Sample Testcases</div>
+                <div style="font-size:16px;font-weight:700;color:${result.samplePassed === result.sampleTotal ? '#1a7f37' : '#d97706'}">${result.samplePassed} / ${result.sampleTotal} Passed</div>
+              </div>
+              <div style="background:#fff;padding:8px 12px;border-radius:6px;border:1px solid #d3ebd8">
+                <div style="font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:600">Hidden Testcases</div>
+                <div style="font-size:16px;font-weight:700;color:#185e4b">${result.hiddenPassed} / ${result.hiddenTotal} Passed <span style="font-size:12px;font-weight:normal;color:#cf222e">(${failedHidden} Failed)</span></div>
+              </div>
+            </div>
+            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:6px">Hidden Testcase Breakdown (${result.hiddenTotal} Cases)</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(135px, 1fr));gap:6px">
+              ${result.hiddenResults.map((r, i) => `
+                <div style="background:${r.passed ? '#edf7ed' : '#fdeeed'};color:${r.passed ? '#1a7f37' : '#cf222e'};border:1px solid ${r.passed ? '#c2e7c2' : '#f9c8c8'};border-radius:6px;padding:4px 8px;font-size:11px;display:flex;align-items:center;gap:4px">
+                  <span>${r.passed ? '✓' : '✗'}</span>
+                  <span>Test ${i + 1}: ${r.passed ? 'Passed' : 'Failed'}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+        toast('Code evaluated and saved.');
+      } catch (e) {
+        $('#runResults').innerHTML = `
+          <div class="notice" style="background:#fff6f6;border-color:#fedada;color:#9b2a22">
+            <strong>Submission Notice</strong>
+            <div>${esc(e.message)}</div>
+          </div>
+        `;
+      } finally {
+        if (subBtn) { subBtn.disabled = false; subBtn.textContent = originalText; }
       }
       return;
     }

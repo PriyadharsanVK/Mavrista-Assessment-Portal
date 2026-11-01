@@ -1,0 +1,26 @@
+[Unit]
+Description=Mavrista Assessment Portal Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/assessment-portal
+ExecStart=/usr/bin/python3 /var/www/assessment-portal/server.py
+Restart=always
+RestartSec=5
+Environment=ASSESSMENT_HOST=127.0.0.1
+Environment=ASSESSMENT_PORT=8000
+Environment=ASSESSMENT_DATA_DIR=/var/www/assessment-portal/data
+Environment=ASSESSMENT_COOKIE_SECURE=1
+EnvironmentFile=-/var/www/assessment-portal/.env
+
+# Security Sandbox
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+

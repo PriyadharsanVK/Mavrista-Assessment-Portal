@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: assessment-portal
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - ASSESSMENT_HOST=0.0.0.0
+      - ASSESSMENT_PORT=8000
+      - ASSESSMENT_DATA_DIR=/app/data
+      - ASSESSMENT_COOKIE_SECURE=${ASSESSMENT_COOKIE_SECURE:-0}
+      - ASSESSMENT_BOOTSTRAP_ADMIN=${ASSESSMENT_BOOTSTRAP_ADMIN:-}
+      - ASSESSMENT_BOOTSTRAP_PASSWORD=${ASSESSMENT_BOOTSTRAP_PASSWORD:-}
+      - ASSESSMENT_BOOTSTRAP_NAME=${ASSESSMENT_BOOTSTRAP_NAME:-Assessment Admin}
+      - ASSESSMENT_SHEETS_WEBHOOK=${ASSESSMENT_SHEETS_WEBHOOK:-}
+      - ASSESSMENT_RETENTION_DAYS=${ASSESSMENT_RETENTION_DAYS:-90}
+    volumes:
+      - ./data:/app/data
+      # Optional: To enable isolated Docker container runner, mount Docker socket:
+      # - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+

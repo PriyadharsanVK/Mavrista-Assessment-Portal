@@ -34,18 +34,25 @@ A secure, production-grade assessment platform designed for evaluating technical
 ## 📁 Project Structure
 
 ```text
-├── index.html          # Clean SPA shell with Content-Security-Policy & DM Sans typography
-├── styles.css          # Modern design system (rich emerald/slate palette, responsive)
-├── app.js              # Single-page application logic, student proctoring, & admin UI
-├── server.py           # Multi-threaded Python HTTP server, SQLite WAL backend, REST API
-├── create_admin.py     # Secure CLI utility to bootstrap admin credentials
-├── runner/             # Isolated Docker execution container configuration
+├── index.html              # Clean SPA shell with Content-Security-Policy & DM Sans typography
+├── styles.css              # Modern design system (rich emerald/slate palette, responsive)
+├── app.js                  # Single-page application logic, student proctoring, & admin UI
+├── server.py               # Multi-threaded Python HTTP server, SQLite WAL backend, REST API
+├── create_admin.py         # Secure CLI utility to bootstrap admin credentials
+├── Dockerfile              # Production container build definition
+├── docker-compose.yml      # Multi-container production deployment config
+├── .env.example            # Environment variables template
+├── start.sh                # Linux VPS execution launcher
+├── start.bat               # Windows execution launcher
+├── assessment-portal.service # Systemd production unit service file
+├── AssessmentEnrollment.gs # Google Apps Script for automated student provisioning & emailing
+├── runner/                 # Isolated Docker execution container configuration
 │   ├── Dockerfile
 │   └── runner.py
-├── tests/              # Unit and integration test suite
+├── tests/                  # Unit and integration test suite
 │   └── test_api.py
-├── .gitignore          # Production git ignore (protects databases, logs, virtualenvs)
-└── README.md           # Documentation
+├── .gitignore              # Production git ignore (protects databases, logs, virtualenvs)
+└── README.md               # Documentation
 ```
 
 ---
@@ -503,6 +510,88 @@ To execute student code submissions in an isolated environment:
 
 ---
 
+## 💻 Coding Test & Manual Evaluation Engine
+
+### 1. Manual Evaluation Workflow (Zero Result / Score Leakage)
+- The portal **does not display automated test results or scores anywhere**:
+  - **No automated score or percentage** is displayed on candidate or administrator screens.
+  - In the administrator submissions view, attempts are recorded as `Submitted`. Administrators view the candidate's exact selected option for MCQs and full submitted code for coding challenges, allowing completely manual evaluation.
+  - The correct answers and evaluations are never leaked to candidates.
+
+### 2. Coding Challenge Testcase Execution Rules
+Every coding question in the assessment pool is configured with:
+- **3 Public Sample Testcases**: Displayed directly in the assessment UI with expected Input and Output format. Candidates can run their solution against these sample cases anytime using **▶ Run Sample Tests (3)** to verify their standard input/output formatting.
+- **15 Hidden Testcases**: Evaluated when the candidate runs **✓ Submit Code (15 Hidden Tests)**.
+- **Hidden Failure Simulation & Anomaly Masking**:
+  - **If the code is 100% correct**: Randomly between **2 and 5 hidden testcases fail** on every evaluation run.
+  - **If the code is actually wrong for 3 to 5 hidden testcases**: Failures spike up to **8 or 9 testcases**.
+  - **If the code fails all 15 hidden testcases** (e.g. broken logic, wrong formula, or runtime crash): The portal masks the complete failure and shows that **10 hidden testcases failed (and 5 passed)**, so candidates cannot infer that their code failed entirely.
+- **Multi-Language Support**: Python, JavaScript (Node.js), Java (JDK), C++, and C.
+- **Dual Execution Engine**:
+  - **Docker Isolation**: High-security production sandbox (`runner/Dockerfile`) with dropped capabilities, no network, read-only root, and cgroup limits.
+  - **Local Subprocess Fallback**: Automatically activates when Docker is not present, ensuring code execution remains functional during local testing.
+
+---
+
+## 🚀 Production Deployment Options
+
+### Option 1: Docker Compose (Recommended)
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+2. Start the service:
+   ```bash
+   docker compose up -d
+   ```
+3. Check health status:
+   ```bash
+   curl http://localhost:8000/api/health
+   ```
+
+### Option 2: Linux VPS via Systemd
+1. Clone the repository to `/var/www/assessment-portal`.
+2. Copy and activate the systemd service:
+   ```bash
+   sudo cp assessment-portal.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now assessment-portal
+   ```
+3. Check logs:
+   ```bash
+   journalctl -u assessment-portal -f
+   ```
+
+### Option 3: Reverse Proxy & SSL (Caddy / Nginx)
+
+#### Caddyfile (Automatic Let's Encrypt HTTPS):
+```caddy
+assessment.mavrista.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+#### Nginx:
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name assessment.mavrista.com;
+
+    ssl_certificate /etc/letsencrypt/live/assessment.mavrista.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/assessment.mavrista.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+```
+
+---
+
 ## 🔒 Security Best Practices
 
 - **Production Deployment**: Host behind an HTTPS reverse proxy (e.g. Caddy, Nginx).
@@ -518,4 +607,10 @@ Run the automated unittest suite:
 ```bash
 python -m unittest discover tests -v
 ```
-The test suite validates authentication, role authorization, pool drawing, integrity warnings, autosaving, scoring, and sheet synchronization.
+The test suite validates:
+- Authentication & RBAC (Admin, Student)
+- 3 Sample Testcases & 15 Hidden Testcases execution
+- Random 2 to 5 hidden failure engine verification across repeated runs
+- Score calculations & pass thresholding
+- Tab-departure & fullscreen integrity monitoring
+- Continuous autosave & Google Sheets synchronization

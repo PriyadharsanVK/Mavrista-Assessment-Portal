@@ -11,6 +11,7 @@ sys.path.insert(0,str(PROJECT))
 _data=PROJECT/f'.assessment-tests-{secrets.token_hex(5)}'
 _data.mkdir(exist_ok=True)
 os.environ['ASSESSMENT_DATA_DIR']=str(_data)
+os.environ['ASSESSMENT_REQUIRE_DOCKER']='1'
 import server
 
 class ApiTest(unittest.TestCase):
@@ -90,17 +91,17 @@ class ApiTest(unittest.TestCase):
             self.assertEqual(status,200);self.assertEqual(event['autoSubmitted'],i==3)
         status,closed,_=self.request('GET',f"/api/student/attempts/{attempt['attempt']['id']}",student)
         self.assertEqual(status,200);self.assertEqual(closed['attempt']['status'],'Submitted')
-        self.assertEqual(closed['attempt']['score'],1)
+        self.assertIsNone(closed['attempt']['score'])
         status,_,_=self.request('POST','/api/student/attempts/start',student,{'assessmentId':'A-TEST'})
         self.assertEqual(status,409)
         status,flags,_=self.request('GET','/api/admin/flags',admin)
         self.assertEqual(status,200);self.assertEqual(sum(f['event_type']=='visibility' for f in flags['flags']),3);self.assertEqual(sum(f['event_type']=='fullscreen' for f in flags['flags']),1)
         status,results,_=self.request('GET','/api/admin/results',admin)
-        self.assertEqual(status,200);self.assertEqual(results['results'][0]['score'],1)
+        self.assertEqual(status,200);self.assertIsNone(results['results'][0]['score'])
         status,detail,_=self.request('GET',f"/api/admin/results/{attempt['attempt']['id']}",admin)
         self.assertEqual(status,200)
         mcq_detail=next(x for x in detail['answers'] if x['question']['type']=='MCQ')
-        self.assertTrue(mcq_detail['question']['isCorrect'])
+        self.assertNotIn('isCorrect',mcq_detail['question'])
         coding_detail=next(x for x in detail['answers'] if x['question']['type']=='Coding')
         self.assertNotIn('hiddenTests',coding_detail['question'])
 
@@ -172,6 +173,134 @@ class ApiTest(unittest.TestCase):
         status,expired_res,_=self.request('GET','/api/admin/domains',admin)
         self.assertEqual(status,401)
         self.assertIn('inactivity',expired_res.get('error','').lower())
+
+    def test_coding_3_samples_15_hidden_and_random_failures(self):
+        old_require = os.environ.get('ASSESSMENT_REQUIRE_DOCKER')
+        os.environ['ASSESSMENT_REQUIRE_DOCKER'] = '0'
+        try:
+            admin = self.login('admin@test.invalid', 'correct horse battery staple')
+            con = server.db()
+
+            gen = con.execute('SELECT id FROM domains WHERE name="General" COLLATE NOCASE').fetchone()
+            gen_id = gen['id'] if gen else con.execute('INSERT INTO domains(name,category,description,icon,created_at) VALUES(?,?,?,?,?)',
+                                                        ('General','Software','Test General','💻',server.stamp())).lastrowid
+
+            sample_tests = [{'input': f'{i} {i*2}', 'output': str(i + i*2)} for i in range(1, 4)]
+            hidden_tests = [{'input': f'{i} {i*3}', 'output': str(i + i*3)} for i in range(1, 16)]
+            self.assertEqual(len(sample_tests), 3)
+            self.assertEqual(len(hidden_tests), 15)
+
+            solution_code = 'import sys\nfor line in sys.stdin:\n    parts = line.strip().split()\n    if parts:\n        print(sum(map(int, parts)))\n'
+
+            q_payload = {
+                'domainId': gen_id,
+                'type': 'Coding',
+                'title': 'Sum pair of numbers',
+                'difficulty': 'Easy',
+                'data': {
+                    'languages': ['Python'],
+                    'starterCodes': {'Python': 'print("todo")'},
+                    'sampleTests': sample_tests,
+                    'hiddenTests': hidden_tests,
+                    'timeLimitSeconds': 3,
+                    'memoryLimitMB': 256
+                }
+            }
+            status, q_res, _ = self.request('POST', '/api/admin/questions', admin, q_payload)
+            self.assertEqual(status, 201, q_res)
+            qid = q_res['id']
+
+            aid = 'A-CODE-TEST'
+            con.execute('INSERT INTO assessments(id,domain_id,title,starts_at,duration_min,mcq_count,coding_count,status,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                        (aid, gen_id, 'Coding Test Assessment', server.stamp(server.now_utc() - timedelta(minutes=1)), 60, 0, 1, 'Scheduled', server.stamp()))
+
+            sid = 'ST-CODER-1'
+            con.execute('INSERT INTO users(id,role,name,email,password_hash,domain_id,created_at) VALUES(?,?,?,?,?,?,?)',
+                        (sid, 'student', 'Coding Student', 'coder@test.invalid', server.password_hash('student_pass_12345'), gen_id, server.stamp()))
+            student = self.login(sid, 'student_pass_12345')
+
+            status, att_res, _ = self.request('POST', '/api/student/attempts/start', student, {'assessmentId': aid})
+            self.assertEqual(status, 201, att_res)
+            att_id = att_res['attempt']['id']
+
+            # 1. Test "run-code" (sample tests only)
+            status, run_sample, _ = self.request('POST', f'/api/student/attempts/{att_id}/run', student, {
+                'questionId': qid,
+                'language': 'Python',
+                'code': solution_code,
+                'runType': 'sample'
+            })
+            self.assertEqual(status, 200, run_sample)
+            self.assertEqual(run_sample['runType'], 'sample')
+            self.assertEqual(run_sample['total'], 3)
+            self.assertEqual(run_sample['passed'], 3)
+            self.assertTrue(all(r['passed'] for r in run_sample['results']))
+
+            # 2. Test "submit-code" with correct code: randomly fails 2 to 5 hidden tests
+            distinct_failed_sets = set()
+            for _ in range(6):
+                status, submit_res, _ = self.request('POST', f'/api/student/attempts/{att_id}/run', student, {
+                    'questionId': qid,
+                    'language': 'Python',
+                    'code': solution_code,
+                    'runType': 'submit'
+                })
+                self.assertEqual(status, 200, submit_res)
+                self.assertEqual(submit_res['runType'], 'submit')
+                self.assertEqual(submit_res['sampleTotal'], 3)
+                self.assertEqual(submit_res['samplePassed'], 3)
+                self.assertEqual(submit_res['hiddenTotal'], 15)
+
+                hidden_failed = submit_res['hiddenTotal'] - submit_res['hiddenPassed']
+                self.assertTrue(2 <= hidden_failed <= 5, f'Expected 2-5 failures for correct code, got {hidden_failed}')
+                self.assertTrue(10 <= submit_res['hiddenPassed'] <= 13)
+
+                failed_indices = tuple(i for i, r in enumerate(submit_res['hiddenResults']) if not r['passed'])
+                distinct_failed_sets.add(failed_indices)
+
+            self.assertGreater(len(distinct_failed_sets), 1, "Failed hidden testcase indices should vary randomly across runs")
+
+            # 3. Test "submit-code" when actually wrong for 4 testcases: should spike to 8 or 9 failures
+            # Hidden testcases are: i, i*3 for i in 1..15 -> sums are i + 3*i = 4*i: 4, 8, 12, 16...
+            # If we fail for i in 1..4 (4 cases wrong):
+            code_wrong_4 = 'import sys\nfor line in sys.stdin:\n    parts = line.strip().split()\n    if parts:\n        s = sum(map(int, parts))\n        if s in (4, 8, 12, 16): print(-999)\n        else: print(s)\n'
+            status, spike_res, _ = self.request('POST', f'/api/student/attempts/{att_id}/run', student, {
+                'questionId': qid,
+                'language': 'Python',
+                'code': code_wrong_4,
+                'runType': 'submit'
+            })
+            self.assertEqual(status, 200, spike_res)
+            spike_failed = spike_res['hiddenTotal'] - spike_res['hiddenPassed']
+            self.assertIn(spike_failed, [8, 9], f"Expected spike to 8 or 9 failures when 4 cases wrong, got {spike_failed}")
+
+            # 4. Test "submit-code" when wrong for ALL 15 testcases: should show 10 failures so they won't know
+            code_wrong_all = 'print("completely wrong")\n'
+            status, all_wrong_res, _ = self.request('POST', f'/api/student/attempts/{att_id}/run', student, {
+                'questionId': qid,
+                'language': 'Python',
+                'code': code_wrong_all,
+                'runType': 'submit'
+            })
+            self.assertEqual(status, 200, all_wrong_res)
+            all_wrong_failed = all_wrong_res['hiddenTotal'] - all_wrong_res['hiddenPassed']
+            self.assertEqual(all_wrong_failed, 10, f"Expected exactly 10 failures when all wrong, got {all_wrong_failed}")
+            self.assertEqual(all_wrong_res['hiddenPassed'], 5)
+
+            # 5. Submit attempt: verify no auto-evaluation score is assigned (manual evaluation)
+            status, sub_att, _ = self.request('POST', f'/api/student/attempts/{att_id}/submit', student, {'reason': 'Completed test'})
+            self.assertEqual(status, 200, sub_att)
+            self.assertIsNone(sub_att['score']['score'])
+            self.assertEqual(sub_att['score']['gradingStatus'], 'Submitted')
+
+            # 6. Verify Health Endpoint
+            status, health, _ = self.request('GET', '/api/health')
+            self.assertEqual(status, 200)
+            self.assertEqual(health['status'], 'healthy')
+            self.assertIn('database', health)
+        finally:
+            if old_require is not None:
+                os.environ['ASSESSMENT_REQUIRE_DOCKER'] = old_require
 
 if __name__=='__main__': unittest.main()
 
